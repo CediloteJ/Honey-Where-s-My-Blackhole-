@@ -86,9 +86,6 @@ def run_script(event=None):
     h_over_lambda = h_meters / (c / freq_hz)
     ground_factor = np.abs(np.sin(2 * np.pi * h_over_lambda * np.sin(sgr_elev_rad)))
 
-    # Transit elevation weighting factor
-    transit_weights = np.sin(sgr_elev_rad) ** 2
-
     best_score = -1.0
     best_w1_angle = 0
     best_w2_angle = 90
@@ -103,7 +100,7 @@ def run_script(event=None):
         dot2 = np.cos(sgr_elev_rad) * np.cos(sgr_az_rad - w2_rad)
         gain_w2 = np.sqrt(np.maximum(0, 1 - dot2**2))
         
-        total_gain = np.sqrt(gain_w1**2 + gain_w2**2) * ground_factor * transit_weights
+        total_gain = np.sqrt(gain_w1**2 + gain_w2**2) * ground_factor
         score = np.sum(total_gain)
         
         if score > best_score:
@@ -123,12 +120,12 @@ def run_script(event=None):
     hourly = np.array([dt.minute == 0 for dt in dt_list])
 
     # Terminal Output Format
-    term_text = f"OPTIMAL WIRE ORIENTATION RESULTS FOR {target_name}\n"
-    term_text += f"Observer Location : {lat:.2f}° N, {lon:.2f}° W\n"
-    term_text += f"Target Max Alt    : {np.max(altaz.alt.deg):.1f}° above horizon\n\n"
-    term_text += f"BEST SETUP FOUND\n"
-    term_text += f"Wire 1 Angle    : {best_w1_angle}° from North\n"
-    term_text += f"Wire 2 Angle    : {best_w2_angle}° from North\n\n"
+    term_text = f" OPTIMAL WIRE ORIENTATION RESULTS FOR {target_name}\n"
+    term_text += f" Observer Location : {lat:.2f}° N, {lon:.2f}° W\n"
+    term_text += f" Target Max Alt    : {np.max(altaz.alt.deg):.1f}° above horizon\n\n"
+    term_text += f" BEST SETUP FOUND \n"
+    term_text += f" Wire 1 Angle    : {best_w1_angle}° from North\n"
+    term_text += f" Wire 2 Angle    : {best_w2_angle}° from North\n\n"
 
     max_alt_idx = np.argmax(alt)
     optimal_view_time = dt_list[max_alt_idx]
