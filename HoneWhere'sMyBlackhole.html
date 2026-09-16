@@ -70,12 +70,12 @@ def run_script(event=None):
         r = requests.get('https://ipapi.co/json/').json()
         lat, lon = float(r['latitude']), float(r['longitude'])
     except Exception:
-        lat, lon = 34.19, -79.76
+        lat, lon = 34.20, -79.76
 
     location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
     target = SkyCoord.from_name(target_name)
 
-    # 1. OPTIMIZATION LOOP
+    # 1. OPTIMIZATION LOOP (Matching Jupyter Notebook exact formula)
     times = Time(date_str) + np.arange(0, 24 * 60, 5) * u.minute
     altaz = target.transform_to(AltAz(obstime=times, location=location))
 
@@ -85,6 +85,7 @@ def run_script(event=None):
 
     h_over_lambda = h_meters / (c / freq_hz)
     ground_factor = np.abs(np.sin(2 * np.pi * h_over_lambda * np.sin(sgr_elev_rad)))
+    transit_weights = np.sin(sgr_elev_rad) ** 2
 
     best_score = -1.0
     best_w1_angle = 0
@@ -100,7 +101,7 @@ def run_script(event=None):
         dot2 = np.cos(sgr_elev_rad) * np.cos(sgr_az_rad - w2_rad)
         gain_w2 = np.sqrt(np.maximum(0, 1 - dot2**2))
         
-        total_gain = np.sqrt(gain_w1**2 + gain_w2**2) * ground_factor
+        total_gain = np.sqrt(gain_w1**2 + gain_w2**2) * ground_factor * transit_weights
         score = np.sum(total_gain)
         
         if score > best_score:
