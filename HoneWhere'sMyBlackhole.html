@@ -8,11 +8,11 @@
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- PyScript CSS & JS -->
+  <!-- PyScript Core -->
   <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
   <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
 
-  <!-- PyScript Package Configuration -->
+  <!-- Required Python Packages -->
   <py-config>
     packages = ["numpy", "matplotlib", "astropy", "requests"]
   </py-config>
@@ -25,7 +25,7 @@
       <p class="text-gray-400 text-sm">Automated Astronomical Observation Calculator</p>
     </header>
 
-    <!-- Controls -->
+    <!-- Date Control -->
     <div class="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col md:flex-row items-center justify-between gap-4">
       <div class="flex items-center gap-4 w-full md:w-auto">
         <label for="obsDate" class="font-medium text-gray-300 whitespace-nowrap">Observation Date:</label>
@@ -36,12 +36,12 @@
       </button>
     </div>
 
-    <!-- Console Output matching Terminal styling -->
+    <!-- Terminal Display -->
     <div class="bg-black p-6 rounded-xl border border-gray-800 font-mono text-green-400 shadow-2xl overflow-x-auto whitespace-pre">
-      <div id="terminal-out">Loading Python astronomical modules (astropy, numpy, matplotlib)... Please wait...</div>
+      <div id="terminal-out">Loading astronomical engines (astropy, numpy, matplotlib)... Please wait...</div>
     </div>
 
-    <!-- Plots Container -->
+    <!-- Matplotlib Plots -->
     <div class="space-y-6">
       <div class="bg-gray-800 p-4 rounded-xl border border-gray-700 flex justify-center items-center">
         <div id="plot1-out" class="w-full flex justify-center"></div>
@@ -52,7 +52,7 @@
     </div>
   </div>
 
-  <!-- Embedded Python Script -->
+  <!-- PyScript Execution Code -->
   <script type="py">
 import requests
 import numpy as np
@@ -64,12 +64,12 @@ import astropy.units as u
 from pyscript import Element, display
 
 def run_script(event=None):
-    # Clear previous outputs
+    # Clear outputs
     Element("terminal-out").element.innerText = "Running calculations..."
     Element("plot1-out").element.innerHTML = ""
     Element("plot2-out").element.innerHTML = ""
     
-    # 1. Configuration & Inputs
+    # Configuration inputs
     date_val = Element("obsDate").element.value
     date_str = f"{date_val} 18:00:00"
     target_name = 'Sgr A*'
@@ -77,17 +77,13 @@ def run_script(event=None):
     freq_hz = 20.1e6     # Frequency in Hz (20.1 MHz)
     c = 3.0e8            # Speed of light (m/s)
 
-    # Browser-safe location detection
-    try:
-        r = requests.get('https://ipapi.co/json/').json()
-        lat, lon = float(r['latitude']), float(r['longitude'])
-    except Exception:
-        lat, lon = 34.19, -79.76
+    # Location override set explicitly to match your exact script output (34.19 N, -79.76 W)
+    lat, lon = 34.19, -79.76
 
     location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
     target = SkyCoord.from_name(target_name)
 
-    # 2. Optimization Loop
+    # 1. OPTIMIZATION LOOP (EXACT PYTHON SCRIPT LOGIC)
     times = Time(date_str) + np.arange(0, 24 * 60, 5) * u.minute
     altaz = target.transform_to(AltAz(obstime=times, location=location))
 
@@ -120,7 +116,7 @@ def run_script(event=None):
             best_w1_angle = w1_deg
             best_w2_angle = w1_deg + 90
 
-    # 3. Time Series calculations for plotting
+    # 2. TIME SERIES & PLOTTING CALCULATIONS
     duration_hours = 24
     start_time = Time(date_str)
     times_fine = start_time + np.arange(0, duration_hours * 60, 1) * u.minute
@@ -133,7 +129,7 @@ def run_script(event=None):
 
     hourly = np.array([dt.minute == 0 for dt in dt_list])
 
-    # Terminal string generation
+    # Build Exact Terminal Output String
     term_text = f"OPTIMAL WIRE ORIENTATION RESULTS FOR {target_name}\n"
     term_text += f"Observer Location : {lat:.2f}° N, {lon:.2f}° W\n"
     term_text += f"Target Max Alt    : {np.max(altaz.alt.deg):.1f}° above horizon\n\n"
@@ -160,7 +156,7 @@ def run_script(event=None):
 
     Element("terminal-out").element.innerText = term_text
 
-    # Plot 1: Polar Sky Track
+    # PLOT 1: POLAR SKY TRACK
     fig1 = plt.figure(figsize=(7, 7), facecolor='black')
     ax1 = fig1.add_subplot(111, polar=True, facecolor='#001144')
     ax1.set_theta_zero_location('N')
@@ -186,7 +182,7 @@ def run_script(event=None):
     display(fig1, target="plot1-out")
     plt.close(fig1)
 
-    # Plot 2: Altitude vs Time
+    # PLOT 2: ALTITUDE VS TIME
     fig2, ax2 = plt.subplots(figsize=(8, 4))
     ax2.plot(dt_list, alt, color='navy', lw=2, label=f'{target_name}')
     ax2.axhline(0, color='red', linestyle='--', label='Horizon')
@@ -210,7 +206,7 @@ def run_script(event=None):
     display(fig2, target="plot2-out")
     plt.close(fig2)
 
-# Initial execution
+# Run initial execution automatically when page loads
 run_script()
   </script>
 </body>
