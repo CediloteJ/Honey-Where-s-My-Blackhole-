@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import numpy as np
 from astropy.coordinates import EarthLocation, SkyCoord, AltAz
@@ -14,6 +14,95 @@ h_meters = 3.0
 freq_hz = 20.1e6
 c = 3.0e8
 
+HTML_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Honey, where's my black hole?</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #0b0e14; color: #e1e6ed; padding: 20px; text-align: center; }
+        .card { background: #161b22; padding: 20px; border-radius: 8px; margin: 15px auto; max-width: 600px; border: 1px solid #30363d; }
+        button { background: #238636; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 16px; }
+        input[type="date"] { padding: 8px; border-radius: 4px; border: 1px solid #30363d; background: #0d1117; color: white; }
+    </style>
+</head>
+<body>
+    <h1>🕳️ Honey, where's my black hole?</h1>
+    <p>Dipole Array & Horizon Tracking for Sagittarius A*</p>
+
+    <div class="card">
+        <label for="obsDate">Date: </label>
+        <input type="date" id="obsDate">
+        <button onclick="fetchData()">Find Sgr A*</button>
+        <p id="status" style="color: #8b949e; margin-top: 10px;"></p>
+    </div>
+
+    <div class="card">
+        <h3>📡 Optimal Dipole Setup</h3>
+        <p>Wire 1: <strong id="w1" style="color: #58a6ff;">--</strong>° from North</p>
+        <p>Wire 2: <strong id="w2" style="color: #58a6ff;">--</strong>° from North</p>
+        <p>Peak Time: <strong id="peakTime" style="color: #3fb950;">--</strong> UTC</p>
+        <p>Peak Altitude: <strong id="peakAlt">--</strong>°</p>
+    </div>
+
+    <div class="card">
+        <div id="altitudePlot" style="width:100%; height:300px;"></div>
+    </div>
+
+    <script>
+        document.getElementById('obsDate').valueAsDate = new Date();
+        let userLat = 0, userLon = 0;
+
+        window.onload = function() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition((pos) => {
+                    userLat = pos.coords.latitude;
+                    userLon = pos.coords.longitude;
+                    document.getElementById('status').innerText = `Location auto-detected: ${userLat.toFixed(2)}°, ${userLon.toFixed(2)}°`;
+                });
+            }
+        };
+
+        async function fetchData() {
+            const dateVal = document.getElementById('obsDate').value;
+            document.getElementById('status').innerText = "Calculating sky track...";
+
+            const response = await fetch('/api/track', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lat: userLat, lon: userLon, date: dateVal })
+            });
+
+            const data = await response.json();
+
+            document.getElementById('w1').innerText = data.best_wire1_deg;
+            document.getElementById('w2').innerText = data.best_wire2_deg;
+            document.getElementById('peakTime').innerText = data.peak_time;
+            document.getElementById('peakAlt').innerText = data.peak_altitude;
+            document.getElementById('status').innerText = "Updated!";
+
+            const traceCurve = { x: data.times, y: data.altitudes, mode: 'lines', name: 'Sgr A*', line: { color: '#58a6ff' } };
+            const traceHorizon = { x: [data.times[0], data.times[data.times.length - 1]], y: [0, 0], mode: 'lines', name: 'Horizon', line: { color: '#f85149', dash: 'dash' } };
+
+            Plotly.newPlot('altitudePlot', [traceCurve, traceHorizon], {
+                title: 'Altitude vs. Time (UTC)',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e1e6ed' },
+                yaxis: { title: 'Altitude (°)', range: [-90, 90] }
+            });
+        }
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/', methods=['GET'])
+def home():
+    return render_template_string(HTML_PAGE)
+
 @app.route('/api/track', methods=['POST'])
 def track_blackhole():
     data = request.json
@@ -23,7 +112,6 @@ def track_blackhole():
 
     location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
     
-    # 1. Wire Orientation Optimization
     times_utc = Time(f"{date_str} 00:00:00", scale='utc') + np.arange(0, 24 * 60, 5) * u.minute
     altaz_utc = SGR_A.transform_to(AltAz(obstime=times_utc, location=location))
 
@@ -55,7 +143,6 @@ def track_blackhole():
                 best_score = score
                 best_w1_angle = w1_deg
 
-    # 2. 24-Hour Orbital Curve
     times_plot_utc = Time(f"{date_str} 00:00:00", scale='utc') + np.arange(0, 24 * 60, 1) * u.minute
     altaz_plot = SGR_A.transform_to(AltAz(obstime=times_plot_utc, location=location))
     
