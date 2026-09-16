@@ -2,4 +2,5 @@ flask
 flask-cors
 numpy
 astropy
+matplotlib
 gunicorn
