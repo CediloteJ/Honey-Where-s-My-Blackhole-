@@ -1,18 +1,18 @@
-import io
-import base64
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')  # Prevents GUI crashes on cloud servers
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from astropy.coordinates import EarthLocation, SkyCoord, AltAz
-from astropy.time import Time
+from astropy.time import Time, TimeDelta
 import astropy.units as u
 
 app = Flask(__name__)
 CORS(app)
+
+target_name = 'Sgr A*'
+SGR_A = SkyCoord.from_name(target_name)
+h_meters = 3.0
+freq_hz = 20.1e6
+c = 3.0e8
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -20,220 +20,341 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8">
     <title>Honey, where's my black hole?</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
-        body { font-family: monospace; background: #0b0e14; color: #e1e6ed; padding: 20px; text-align: center; }
-        .card { background: #161b22; padding: 20px; border-radius: 8px; margin: 15px auto; max-width: 800px; border: 1px solid #30363d; }
-        button { background: #238636; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; }
-        input { padding: 8px; border-radius: 4px; border: 1px solid #30363d; background: #0d1117; color: white; margin: 5px; }
-        img { max-width: 100%; height: auto; border-radius: 8px; margin-top: 15px; }
+        body { font-family: sans-serif; background: #0b0e14; color: #e1e6ed; padding: 20px; text-align: center; }
+        .card { background: #161b22; padding: 20px; border-radius: 8px; margin: 15px auto; max-width: 600px; border: 1px solid #30363d; }
+        button { background: #238636; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 16px; }
+        button.secondary { background: #1f6feb; }
+        input[type="date"], input[type="time"], input[type="number"] { padding: 8px; border-radius: 4px; border: 1px solid #30363d; background: #0d1117; color: white; }
+        .hidden { display: none; }
+        .warn { color: #f0883e; }
+        label { color: #8b949e; margin-right: 4px; }
     </style>
 </head>
 <body>
-
     <h1>🕳️ Honey, where's my black hole?</h1>
-    <p>Sagittarius A* Tracking & Crossed-Dipole Optimization</p>
+    <p>Dipole Array & Horizon Tracking for Sagittarius A*</p>
 
+    <!-- STEP 1: date + location -->
     <div class="card">
-        <label>Date & Time (UTC): </label>
-        <input type="text" id="obsDate" value="2026-09-15 18:00:00">
-        <br>
-        <label>Lat: </label><input type="text" id="lat" style="width: 80px;">
-        <label>Lon: </label><input type="text" id="lon" style="width: 80px;">
+        <h3>Step 1: Find the path</h3>
+        <label for="obsDate">Date:</label>
+        <input type="date" id="obsDate">
         <br><br>
-        <button onclick="runScript()">Run Sky Tracking Script</button>
-        <p id="status" style="color: #8b949e;"></p>
+        <label for="latInput">Lat:</label>
+        <input type="number" step="0.01" id="latInput" value="0">
+        <label for="lonInput">Lon:</label>
+        <input type="number" step="0.01" id="lonInput" value="0">
+        <br><br>
+        <button onclick="findPath()">Find Sgr A*</button>
+        <p id="status" style="color: #8b949e; margin-top: 10px;"></p>
     </div>
 
-    <div class="card" id="resultsCard" style="display:none;">
-        <pre id="outputConsole" style="text-align: left; background: #000; padding: 15px; border-radius: 5px; color: #00ff00;"></pre>
-        <h3>Polar Sky Track</h3>
-        <img id="polarPlot" src="" />
-        <h3>Altitude vs Time</h3>
-        <img id="altPlot" src="" />
+    <div class="card">
+        <h3>📈 Sky Path</h3>
+        <p>Rises: <strong id="riseTime" style="color: #58a6ff;">--</strong> UTC</p>
+        <p>Peak Time: <strong id="peakTime" style="color: #3fb950;">--</strong> UTC (<strong id="peakAlt">--</strong>°)</p>
+        <p>Sets: <strong id="setTime" style="color: #58a6ff;">--</strong> UTC</p>
+    </div>
+
+    <div class="card">
+        <div id="altitudePlot" style="width:100%; height:320px;"></div>
+    </div>
+
+    <!-- STEP 2: observing hours, hidden until step 1 runs -->
+    <div class="card hidden" id="windowCard">
+        <h3>Step 2: When will you actually be there?</h3>
+        <label for="startTime">Start (UTC):</label>
+        <input type="time" id="startTime" value="00:00">
+        <label for="endTime">End (UTC):</label>
+        <input type="time" id="endTime" value="03:00">
+        <p style="color:#8b949e; font-size: 13px;">If your end time is earlier than your start time, it's assumed to roll into the next day.</p>
+        <button class="secondary" onclick="optimizeWindow()">Calculate Best Wire Orientation</button>
+        <p id="optStatus" style="margin-top: 10px;"></p>
+    </div>
+
+    <div class="card hidden" id="resultCard">
+        <h3>📡 Optimal Dipole Setup For Your Window</h3>
+        <p>Wire 1: <strong id="w1" style="color: #58a6ff;">--</strong>° from North</p>
+        <p>Wire 2: <strong id="w2" style="color: #58a6ff;">--</strong>° from North</p>
+        <p>Altitude Range In Window: <strong id="altRange">--</strong></p>
     </div>
 
     <script>
-        // Get user position via browser GPS
+        document.getElementById('obsDate').valueAsDate = new Date();
+
         window.onload = function() {
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition((pos) => {
-                    document.getElementById('lat').value = pos.coords.latitude.toFixed(2);
-                    document.getElementById('lon').value = pos.coords.longitude.toFixed(2);
+                    document.getElementById('latInput').value = pos.coords.latitude.toFixed(2);
+                    document.getElementById('lonInput').value = pos.coords.longitude.toFixed(2);
+                    document.getElementById('status').innerText = `Location auto-detected: ${pos.coords.latitude.toFixed(2)}°, ${pos.coords.longitude.toFixed(2)}°`;
                 });
             }
         };
 
-        async function runScript() {
+        let lastTrack = null; // cache of the full-day track so step 2 doesn't refetch it
+
+        async function findPath() {
             const dateVal = document.getElementById('obsDate').value;
-            const latVal = document.getElementById('lat').value || 34.19;
-            const lonVal = document.getElementById('lon').value || -79.76;
+            const lat = parseFloat(document.getElementById('latInput').value);
+            const lon = parseFloat(document.getElementById('lonInput').value);
 
-            document.getElementById('status').innerText = "Running calculations...";
+            document.getElementById('status').innerText = "Calculating sky track...";
+            document.getElementById('windowCard').classList.add('hidden');
+            document.getElementById('resultCard').classList.add('hidden');
 
-            const response = await fetch('/api/run', {
+            const response = await fetch('/api/track', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ date: dateVal, lat: latVal, lon: lonVal })
+                body: JSON.stringify({ lat, lon, date: dateVal })
             });
-
             const data = await response.json();
 
-            document.getElementById('outputConsole').innerText = data.console_text;
-            document.getElementById('polarPlot').src = "data:image/png;base64," + data.polar_img;
-            document.getElementById('altPlot').src = "data:image/png;base64," + data.alt_img;
-            
-            document.getElementById('resultsCard').style.display = "block";
-            document.getElementById('status').innerText = "Done!";
+            if (data.error) {
+                document.getElementById('status').innerText = data.error;
+                return;
+            }
+
+            lastTrack = { lat, lon, date: dateVal };
+
+            if (!data.above_horizon) {
+                document.getElementById('status').innerText = "Sgr A* does not rise above the horizon on this date/location.";
+                document.getElementById('riseTime').innerText = '--';
+                document.getElementById('peakTime').innerText = '--';
+                document.getElementById('peakAlt').innerText = '--';
+                document.getElementById('setTime').innerText = '--';
+            } else {
+                document.getElementById('status').innerText = "Path found. Enter your observing hours below.";
+                document.getElementById('riseTime').innerText = data.rise_time;
+                document.getElementById('peakTime').innerText = data.peak_time;
+                document.getElementById('peakAlt').innerText = data.peak_altitude;
+                document.getElementById('setTime').innerText = data.set_time;
+                document.getElementById('windowCard').classList.remove('hidden');
+            }
+
+            drawPlot(data.times, data.altitudes, null, null);
+        }
+
+        async function optimizeWindow() {
+            if (!lastTrack) {
+                document.getElementById('optStatus').innerText = "Click 'Find Sgr A*' first.";
+                return;
+            }
+            const startTime = document.getElementById('startTime').value; // HH:MM
+            const endTime = document.getElementById('endTime').value;     // HH:MM
+
+            document.getElementById('optStatus').innerText = "Optimizing...";
+            document.getElementById('resultCard').classList.add('hidden');
+
+            const response = await fetch('/api/optimize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lat: lastTrack.lat,
+                    lon: lastTrack.lon,
+                    date: lastTrack.date,
+                    start_time: startTime,
+                    end_time: endTime
+                })
+            });
+            const data = await response.json();
+
+            if (data.error) {
+                document.getElementById('optStatus').innerText = data.error;
+                return;
+            }
+
+            if (!data.visible_in_window) {
+                let msg = "Sgr A* is not above the horizon during that window.";
+                if (data.actual_rise && data.actual_set) {
+                    msg += ` It's actually visible from ${data.actual_rise} to ${data.actual_set} UTC.`;
+                }
+                document.getElementById('optStatus').innerText = msg;
+                document.getElementById('resultCard').classList.add('hidden');
+                return;
+            }
+
+            document.getElementById('optStatus').innerText = "Done!";
+            document.getElementById('w1').innerText = data.best_wire1_deg;
+            document.getElementById('w2').innerText = data.best_wire2_deg;
+            document.getElementById('altRange').innerText = `${data.min_alt}° to ${data.max_alt}°`;
+            document.getElementById('resultCard').classList.remove('hidden');
+
+            drawPlot(data.times, data.altitudes, data.window_start_time, data.window_end_time);
+        }
+
+        function drawPlot(times, altitudes, windowStart, windowEnd) {
+            const traceCurve = { x: times, y: altitudes, mode: 'lines', name: 'Sgr A*', line: { color: '#58a6ff' } };
+            const traceHorizon = { x: [times[0], times[times.length - 1]], y: [0, 0], mode: 'lines', name: 'Horizon', line: { color: '#f85149', dash: 'dash' } };
+
+            const layout = {
+                title: 'Altitude vs. Time (UTC)',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e1e6ed' },
+                yaxis: { title: 'Altitude (°)', range: [-90, 90] },
+                shapes: []
+            };
+
+            if (windowStart && windowEnd) {
+                layout.shapes.push({
+                    type: 'rect',
+                    xref: 'x', yref: 'paper',
+                    x0: windowStart, x1: windowEnd,
+                    y0: 0, y1: 1,
+                    fillcolor: '#f0883e',
+                    opacity: 0.25,
+                    line: { width: 0 }
+                });
+            }
+
+            Plotly.newPlot('altitudePlot', [traceCurve, traceHorizon], layout);
         }
     </script>
 </body>
 </html>
 """
 
+
+def compute_full_track(lat, lon, date_str):
+    """Full 24h altaz track starting at 00:00 UTC on date_str, at 5-min resolution."""
+    location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
+    times_utc = Time(f"{date_str} 00:00:00", scale='utc') + np.arange(0, 24 * 60, 5) * u.minute
+    altaz = SGR_A.transform_to(AltAz(obstime=times_utc, location=location))
+    return location, times_utc, altaz
+
+
+def parse_window(date_str, start_hhmm, end_hhmm):
+    """Build observe_start/observe_end Time objects from a date + HH:MM start/end.
+    If end <= start, the window is assumed to roll into the next day."""
+    observe_start = Time(f"{date_str} {start_hhmm}:00", scale='utc')
+    observe_end = Time(f"{date_str} {end_hhmm}:00", scale='utc')
+    if observe_end <= observe_start:
+        observe_end = observe_end + TimeDelta(1 * u.day)
+    return observe_start, observe_end
+
+
+def best_wire_angles(az_rad, elev_rad):
+    h_over_lambda = h_meters / (c / freq_hz)
+    ground_factor = np.abs(np.sin(2 * np.pi * h_over_lambda * np.sin(elev_rad)))
+
+    best_score = -1.0
+    best_w1_angle = 0
+
+    for w1_deg in range(0, 95, 5):
+        w1_rad = np.radians(w1_deg)
+        w2_rad = np.radians(w1_deg + 90)
+
+        dot1 = np.cos(elev_rad) * np.cos(az_rad - w1_rad)
+        gain_w1 = np.sqrt(np.maximum(0, 1 - dot1 ** 2))
+
+        dot2 = np.cos(elev_rad) * np.cos(az_rad - w2_rad)
+        gain_w2 = np.sqrt(np.maximum(0, 1 - dot2 ** 2))
+
+        total_gain = np.sqrt(gain_w1 ** 2 + gain_w2 ** 2) * ground_factor
+        score = np.sum(total_gain)
+
+        if score > best_score:
+            best_score = score
+            best_w1_angle = w1_deg
+
+    return best_w1_angle, best_w1_angle + 90
+
+
 @app.route('/', methods=['GET'])
 def home():
     return render_template_string(HTML_PAGE)
 
-@app.route('/api/run', methods=['POST'])
-def run_user_script():
+
+@app.route('/api/track', methods=['POST'])
+def track_blackhole():
+    """Step 1: just report the sky path -- rise/peak/set -- no wire optimization yet."""
     data = request.json
-    date_str = data.get('date', '2026-09-15 18:00:00')
-    lat = float(data.get('lat', 34.19))
-    lon = float(data.get('lon', -79.76))
+    try:
+        lat = float(data.get('lat', 0))
+        lon = float(data.get('lon', 0))
+        date_str = data.get('date')
+        if not date_str:
+            return jsonify({"error": "Missing date."}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid lat/lon/date."}), 400
 
-    target_name = 'Sgr A*'
-    h_meters = 3.0       
-    freq_hz = 20.1e6     
-    c = 3.0e8            
+    location, times_utc, altaz = compute_full_track(lat, lon, date_str)
 
-    location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
-    target = SkyCoord.from_name(target_name)
+    altitudes = altaz.alt.deg
+    azimuths = altaz.az.deg
+    time_labels = [t.to_datetime().strftime('%Y-%m-%dT%H:%M:%S') for t in times_utc]
 
-    # --- YOUR ORIGINAL OPTIMIZATION LOOP ---
-    times_utc = Time(date_str, scale='utc') + np.arange(0, 24 * 60, 5) * u.minute
-    altaz_utc = target.transform_to(AltAz(obstime=times_utc, location=location))
+    above_horizon_indices = np.where(altitudes > 0)[0]
 
-    visible_mask = altaz_utc.alt.deg > 0
-    sgr_az_rad = altaz_utc.az.rad[visible_mask]
-    sgr_elev_rad = altaz_utc.alt.rad[visible_mask]
+    response = {
+        "times": time_labels,
+        "altitudes": altitudes.tolist(),
+        "azimuths": azimuths.tolist(),
+        "above_horizon": bool(len(above_horizon_indices) > 0),
+    }
 
-    h_over_lambda = h_meters / (c / freq_hz)
-    ground_factor = np.abs(np.sin(2 * np.pi * h_over_lambda * np.sin(sgr_elev_rad)))
+    if len(above_horizon_indices) > 0:
+        max_alt_idx = int(np.argmax(altitudes))
+        response["rise_time"] = time_labels[above_horizon_indices[0]].split('T')[1][:5]
+        response["set_time"] = time_labels[above_horizon_indices[-1]].split('T')[1][:5]
+        response["peak_time"] = time_labels[max_alt_idx].split('T')[1][:5]
+        response["peak_altitude"] = round(float(altitudes[max_alt_idx]), 2)
 
-    best_score = -1.0
-    best_w1_angle = 0
-    best_w2_angle = 90
+    return jsonify(response)
 
-    if len(sgr_elev_rad) > 0:
-        for w1_deg in range(0, 95, 5):
-            w1_rad = np.radians(w1_deg)
-            w2_rad = np.radians(w1_deg + 90)
-            
-            dot1 = np.cos(sgr_elev_rad) * np.cos(sgr_az_rad - w1_rad)
-            gain_w1 = np.sqrt(np.maximum(0, 1 - dot1**2))
-            
-            dot2 = np.cos(sgr_elev_rad) * np.cos(sgr_az_rad - w2_rad)
-            gain_w2 = np.sqrt(np.maximum(0, 1 - dot2**2))
-            
-            total_gain = np.sqrt(gain_w1**2 + gain_w2**2) * ground_factor
-            score = np.sum(total_gain)
-            
-            if score > best_score:
-                best_score = score
-                best_w1_angle = w1_deg
-                best_w2_angle = w1_deg + 90
 
-    # --- YOUR ORIGINAL 24HR TRACK ---
-    duration_hours = 24
-    start_time_utc = Time(date_str, scale='utc')
-    times_plot_utc = start_time_utc + np.arange(0, duration_hours * 60, 1) * u.minute
+@app.route('/api/optimize', methods=['POST'])
+def optimize_window():
+    """Step 2: restrict the optimization to the caller's actual observing hours."""
+    data = request.json
+    try:
+        lat = float(data.get('lat', 0))
+        lon = float(data.get('lon', 0))
+        date_str = data.get('date')
+        start_hhmm = data.get('start_time')
+        end_hhmm = data.get('end_time')
+        if not (date_str and start_hhmm and end_hhmm):
+            return jsonify({"error": "Missing date/start_time/end_time."}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid input."}), 400
 
-    altaz_plot = target.transform_to(AltAz(obstime=times_plot_utc, location=location))
-    alt = altaz_plot.alt.deg
-    az = altaz_plot.az.rad
-    r = 90 - alt
+    location, times_utc, altaz = compute_full_track(lat, lon, date_str)
+    observe_start, observe_end = parse_window(date_str, start_hhmm, end_hhmm)
 
-    dt_list_local = np.array([t.to_datetime().astimezone() for t in times_plot_utc])
-    local_tz_info = dt_list_local[0].tzinfo
-    local_tz_name = dt_list_local[0].strftime('%Z')
-    hourly_mask = np.array([dt.minute == 0 for dt in dt_list_local])
+    above_horizon = altaz.alt.deg > 0
+    window_mask = (times_utc >= observe_start) & (times_utc <= observe_end)
+    visible_mask = above_horizon & window_mask
 
-    # --- YOUR ORIGINAL POLAR PLOT ---
-    fig1 = plt.figure(figsize=(7, 7), facecolor='black')
-    ax1 = fig1.add_subplot(111, polar=True, facecolor='#001144')
-    ax1.set_theta_zero_location('N')
-    ax1.set_theta_direction(1)
-    ax1.set_ylim(0, 90)
-    ax1.set_yticks([30, 60, 90])
-    ax1.set_yticklabels(['', '', ''])
-    ax1.grid(color='#4466aa', linestyle='--', linewidth=0.8)
-    ax1.set_xticks(np.radians([0, 90, 180, 270]))
-    ax1.set_xticklabels(['N', 'E', 'S', 'W'], color='yellow', fontsize=12, fontweight='bold')
+    altitudes = altaz.alt.deg
+    time_labels = [t.to_datetime().strftime('%Y-%m-%dT%H:%M:%S') for t in times_utc]
 
-    r_plot = r.copy()
-    r_plot[alt < 0] = np.nan
-    ax1.plot(az, r_plot, color='#ff7700', lw=2)
+    if not np.any(visible_mask):
+        result = {"visible_in_window": False}
+        if np.any(above_horizon):
+            above_idx = np.where(above_horizon)[0]
+            result["actual_rise"] = time_labels[above_idx[0]].split('T')[1][:5]
+            result["actual_set"] = time_labels[above_idx[-1]].split('T')[1][:5]
+        return jsonify(result)
 
-    for i in np.where(hourly_mask & (alt >= 0))[0]:
-        ax1.plot(az[i], r[i], 'o', color='yellow', markersize=4)
-        ax1.annotate(dt_list_local[i].strftime('%H:%M'), xy=(az[i], r[i]), xytext=(0, 10), textcoords='offset points', ha='center', color='yellow', fontsize=9)
-
-    plt.title(f"Sky Track for {target_name}\n({lat:.2f}°, {lon:.2f}°)", color='white', pad=15)
-    plt.tight_layout()
-    
-    buf1 = io.BytesIO()
-    plt.savefig(buf1, format='png', facecolor=fig1.get_facecolor())
-    buf1.seek(0)
-    polar_base64 = base64.b64encode(buf1.getvalue()).decode('utf-8')
-    plt.close(fig1)
-
-    # --- YOUR ORIGINAL ALTITUDE PLOT ---
-    fig2 = plt.figure(figsize=(8, 4))
-    plt.plot(dt_list_local, alt, color='navy', lw=2, label=f'{target_name}')
-    plt.axhline(0, color='red', linestyle='--', label='Horizon')
-    plt.fill_between(dt_list_local, alt, -90, where=(alt <= 0), color='gray', alpha=0.3, label='Below Horizon')
-
-    for i in np.where(hourly_mask & (alt > 0))[0]:
-        plt.annotate(dt_list_local[i].strftime('%H:%M'), (dt_list_local[i], alt[i]), textcoords="offset points", xytext=(0, 6), ha='center', fontsize=8)
-
-    ax_plt = plt.gca()
-    ax_plt.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M', tz=local_tz_info))
-    ax_plt.xaxis.set_major_locator(mdates.HourLocator(interval=2, tz=local_tz_info))
-    plt.gcf().autofmt_xdate()
-
-    plt.title(f'{target_name} Altitude vs. Time ({local_tz_name})')
-    plt.xlabel(f'Time ({local_tz_name})')
-    plt.ylabel('Altitude (degrees)')
-    plt.ylim(-90, max(max(alt) + 15, 25))
-    plt.grid(True, linestyle=':', alpha=0.6)
-    plt.legend(loc='lower right')
-    plt.tight_layout()
-
-    buf2 = io.BytesIO()
-    plt.savefig(buf2, format='png')
-    buf2.seek(0)
-    alt_base64 = base64.b64encode(buf2.getvalue()).decode('utf-8')
-    plt.close(fig2)
-
-    # --- YOUR CONSOLE TEXT ---
-    max_alt_idx = np.argmax(alt)
-    optimal_view_time_local = dt_list_local[max_alt_idx]
-    max_altitude = alt[max_alt_idx]
-
-    console_output = f"OPTIMAL WIRE ORIENTATION RESULTS FOR {target_name}\n"
-    console_output += f"Observer Location : {lat:.2f}° N, {lon:.2f}° W\n"
-    console_output += f"Target Max Alt    : {np.max(altaz_utc.alt.deg):.1f}° above horizon\n\n"
-    console_output += f"BEST SETUP FOUND\n"
-    console_output += f"Wire 1 Angle    : {best_w1_angle}° from North\n"
-    console_output += f"Wire 2 Angle    : {best_w2_angle}° from North\n\n"
-    console_output += f"Peak Viewing Time: {optimal_view_time_local.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
-    console_output += f"Peak Altitude    : {max_altitude:.2f}°"
+    sgr_az_rad = altaz.az.rad[visible_mask]
+    sgr_elev_rad = altaz.alt.rad[visible_mask]
+    best_w1_angle, best_w2_angle = best_wire_angles(sgr_az_rad, sgr_elev_rad)
 
     return jsonify({
-        "console_text": console_output,
-        "polar_img": polar_base64,
-        "alt_img": alt_base64
+        "visible_in_window": True,
+        "best_wire1_deg": best_w1_angle,
+        "best_wire2_deg": best_w2_angle,
+        "min_alt": round(float(np.min(altitudes[visible_mask])), 1),
+        "max_alt": round(float(np.max(altitudes[visible_mask])), 1),
+        "times": time_labels,
+        "altitudes": altitudes.tolist(),
+        "window_start_time": observe_start.to_datetime().strftime('%Y-%m-%dT%H:%M:%S'),
+        "window_end_time": observe_end.to_datetime().strftime('%Y-%m-%dT%H:%M:%S'),
     })
+
 
 if __name__ == '__main__':
     app.run(port=5000)
