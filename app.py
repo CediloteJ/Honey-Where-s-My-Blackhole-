@@ -94,7 +94,6 @@ HTML_PAGE = """
                         document.getElementById('status').innerText = `Location auto-detected: ${userLat.toFixed(2)}°, ${userLon.toFixed(2)}°`;
                     },
                     (err) => {
-                        // Fallback coordinates for Florence, SC
                         userLat = 34.20; 
                         userLon = -79.76;
                         document.getElementById('status').innerText = `Geolocation blocked, using default: ${userLat.toFixed(2)}°, ${userLon.toFixed(2)}°`;
@@ -118,7 +117,6 @@ HTML_PAGE = """
 
             const data = await response.json();
 
-            // Populate UI
             document.getElementById('w1').innerText = data.best_wire1_deg;
             document.getElementById('w2').innerText = data.best_wire2_deg;
             document.getElementById('riseTime').innerText = data.rise_time;
@@ -127,7 +125,6 @@ HTML_PAGE = """
             document.getElementById('setTime').innerText = data.set_time;
             document.getElementById('status').innerText = "Updated!";
 
-            // Plotly Configuration
             const traceCurve = { x: data.times, y: data.altitudes, mode: 'lines', name: 'Sgr A*', line: { color: '#58a6ff' } };
             const traceHorizon = { x: [data.times[0], data.times[data.times.length - 1]], y: [0, 0], mode: 'lines', name: 'Horizon', line: { color: '#f85149', dash: 'dash' } };
 
@@ -154,7 +151,7 @@ HTML_PAGE = """
                     xref: 'x', yref: 'paper',
                     x0: data.window_start_iso, x1: data.window_end_iso,
                     y0: 0, y1: 1,
-                    fillcolor: 'rgba(139, 90, 43, 0.4)', // Matches the shaded brown box in the screenshot
+                    fillcolor: 'rgba(139, 90, 43, 0.4)',
                     line: { width: 0 }
                 }],
                 margin: { l: 50, r: 20, t: 50, b: 40 }
@@ -182,22 +179,28 @@ def track_blackhole():
 
     location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=0 * u.m)
     
-    # 24-hour track for plotting the graph
+    # 24-hour track plot generation
     times_plot_utc = Time(f"{date_str} 00:00:00", scale='utc') + np.arange(0, 24 * 60, 1) * u.minute
     altaz_plot = SGR_A.transform_to(AltAz(obstime=times_plot_utc, location=location))
-    
     altitudes = altaz_plot.alt.deg
     time_iso_strings = [t.to_datetime().isoformat() for t in times_plot_utc]
 
-    # Calculate Rise, Peak, Set
-    above_horizon = altitudes > 0
-    if np.any(above_horizon):
-        visible_indices = np.where(above_horizon)[0]
-        rise_time = times_plot_utc[visible_indices[0]].to_datetime().strftime('%H:%M')
-        set_time = times_plot_utc[visible_indices[-1]].to_datetime().strftime('%H:%M')
-        max_alt_idx = int(np.argmax(altitudes))
-        peak_time = times_plot_utc[max_alt_idx].to_datetime().strftime('%H:%M')
-        peak_alt = round(altitudes[max_alt_idx], 2)
+    # Compute Continuous 36-Hour Pass to ensure correct Rise, Peak, and Set timing across midnight
+    t_start_36h = Time(f"{date_str} 12:00:00", scale='utc')
+    times_36h = t_start_36h + np.arange(0, 36 * 60, 1) * u.minute
+    altaz_36h = SGR_A.transform_to(AltAz(obstime=times_36h, location=location))
+    alt_36h = altaz_36h.alt.deg
+
+    max_idx = int(np.argmax(alt_36h))
+    if alt_36h[max_idx] > 0:
+        peak_time = times_36h[max_idx].to_datetime().strftime('%H:%M')
+        peak_alt = round(alt_36h[max_idx], 2)
+
+        below_zero_before = np.where(alt_36h[:max_idx] <= 0)[0]
+        below_zero_after = np.where(alt_36h[max_idx:] <= 0)[0]
+
+        rise_time = times_36h[below_zero_before[-1] + 1].to_datetime().strftime('%H:%M') if len(below_zero_before) > 0 else "--:--"
+        set_time = times_36h[max_idx + below_zero_after[0] - 1].to_datetime().strftime('%H:%M') if len(below_zero_after) > 0 else "--:--"
     else:
         rise_time = set_time = peak_time = "--:--"
         peak_alt = "--"
@@ -206,11 +209,9 @@ def track_blackhole():
     obs_start = Time(f"{date_str} {start_str}:00", scale='utc')
     obs_end = Time(f"{date_str} {end_str}:00", scale='utc')
     
-    # Handle rollover past midnight
     if obs_end < obs_start:
         obs_end += 24 * u.hour
 
-    # Wire Angle Optimization based strictly on the user's observing window
     window_duration_mins = int((obs_end - obs_start).to_value('minute'))
     if window_duration_mins <= 0: 
         window_duration_mins = 60
